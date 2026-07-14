@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linkfolio"
+version = "0.1.0"
+description = "Convert Netscape bookmarks into a newspaper-style homepage"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Eric Bixby", email = "eric.k.bixby@gmail.com" }]
+keywords = ["bookmarks", "netscape", "homepage", "html", "firefox"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Utilities",
+]
+dependencies = ["bookmarks_parser"]
+
+[project.urls]
+Homepage = "https://github.com/eric-bixby/linkfolio"
+Repository = "https://github.com/eric-bixby/linkfolio"
+
+[project.scripts]
+linkfolio = "linkfolio:main"
+
+[tool.setuptools]
+py-modules = ["linkfolio"]
