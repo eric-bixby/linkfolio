@@ -8,11 +8,14 @@ so the suite runs fully offline.
 from __future__ import annotations
 
 import itertools
+import pathlib
 from unittest import mock
 
 import pytest
 
 import linkfolio as lf
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent
 
 
 # ── helpers to build node trees ────────────────────────────────────────────
@@ -281,6 +284,111 @@ def test_build_html_is_self_contained_page():
     assert page.startswith("<!doctype html>")
     assert "<style>" in page
     assert page.rstrip().endswith("</html>")
+
+
+# ── logo ───────────────────────────────────────────────────────────────────
+
+
+def test_build_logo_is_a_button_with_mark_and_wordmark():
+    out = lf.build_logo()
+    assert "id='logo'" in out
+    assert "<svg" in out
+    assert "Link<em>Folio</em>" in out
+    # starts un-pressed: the tables are visible by default
+    assert "aria-pressed='false'" in out
+
+
+def test_default_page_wires_the_logo_to_the_tables():
+    page = lf.build_html("<nav></nav>", [], [("M", ["<a>m</a>"])])
+    assert "id='logo'" in page
+    assert "tables-hidden" in page  # toggle class used by both the JS and the CSS
+    assert 'id="dashboard"' in page  # clock/greeting panel
+    assert "body.tables-hidden #dashboard{display:flex;}" in page
+
+
+# ── templating ─────────────────────────────────────────────────────────────
+
+
+def test_build_html_substitutes_every_placeholder():
+    tpl = "[{{LOGO}}][{{TOOLBAR}}][{{INDEX_TABLE}}][{{MAIN_TABLE}}][{{NAME}}]"
+    page = lf.build_html(
+        "<nav>bar</nav>",
+        [("I", ["<a>i</a>"])],
+        [("M", ["<a>m</a>"])],
+        template=tpl,
+        name="Ada",
+    )
+    assert "{{" not in page
+    assert "<nav>bar</nav>" in page
+    assert "[Ada]" in page
+    assert page.count("<table>") == 2
+
+
+def test_build_html_leaves_unknown_placeholders_alone():
+    page = lf.build_html("", [], [], template="{{TOOLBAR}}{{NOPE}}")
+    assert page == "{{NOPE}}"
+
+
+def test_build_html_does_not_rescan_substituted_content():
+    # a bookmark title containing a placeholder must not be expanded
+    toolbar = "{{MAIN_TABLE}}"
+    page = lf.build_html(toolbar, [], [("M", ["<a>m</a>"])], template="{{TOOLBAR}}")
+    assert page == "{{MAIN_TABLE}}"
+
+
+def test_build_html_warns_about_missing_required_placeholders(capsys):
+    lf.build_html("", [], [], template="<html>{{TOOLBAR}}</html>")
+    assert "{{MAIN_TABLE}}" in capsys.readouterr().err
+
+
+def test_empty_tables_render_as_nothing():
+    page = lf.build_html("<nav></nav>", [], [], template="[{{INDEX_TABLE}}{{MAIN_TABLE}}]")
+    assert page == "[]"
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("Ada", "Ada"),
+        ('"; alert(1); //', '\\"; alert(1); //'),
+        ("</script>", "\\u003c/script>"),
+        ("back\\slash", "back\\\\slash"),
+    ],
+)
+def test_js_string_escapes_dangerous_names(name, expected):
+    assert lf._js_string(name) == expected
+
+
+def test_load_template_prefers_explicit_path(tmp_path):
+    custom = tmp_path / "mine.html"
+    custom.write_text("CUSTOM {{MAIN_TABLE}}", encoding="utf-8")
+    assert lf.load_template(str(custom)) == "CUSTOM {{MAIN_TABLE}}"
+
+
+def test_load_template_dies_on_unreadable_path(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        lf.load_template(str(tmp_path / "missing.html"))
+    assert "Failed to read template" in capsys.readouterr().err
+
+
+def test_load_template_finds_template_in_cwd(tmp_path, monkeypatch):
+    (tmp_path / lf.DEFAULT_TEMPLATE).write_text("FROM CWD", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert lf.load_template(None) == "FROM CWD"
+
+
+def test_load_template_falls_back_to_builtin(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # pretend the module directory has no template.html either
+    monkeypatch.setattr(lf, "__file__", str(tmp_path / "linkfolio.py"))
+    assert lf.load_template(None) == lf.BUILTIN_TEMPLATE
+
+
+def test_shipped_template_matches_builtin():
+    """template.html is the user-editable copy of BUILTIN_TEMPLATE; keep them identical."""
+    shipped = REPO_ROOT / lf.DEFAULT_TEMPLATE
+    assert shipped.is_file(), "template.html is missing (regenerate: linkfolio.py --write-template)"
+    assert shipped.read_text(encoding="utf-8") == lf.BUILTIN_TEMPLATE
 
 
 # ── error handling ─────────────────────────────────────────────────────────
