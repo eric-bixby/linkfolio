@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `linkfolio.py` is a single-file CLI that converts a Netscape-format bookmarks export
 (the file browsers produce via "Export Bookmarks to HTML") into a dark-mode,
 newspaper-style `index.html` homepage. There is no package structure, no test suite,
-and one runtime dependency (`bookmarks_parser`).
+and one runtime dependency (`bookmarks_parser`). The page shell lives in the
+user-editable `template.html`.
 
 ## Commands
 
@@ -17,6 +18,9 @@ pip install -r requirements.txt          # installs bookmarks_parser
 ./linkfolio.py [input] [-o OUTPUT]        # default input bookmarks.html -> index.html
 ./linkfolio.py --no-icons                 # skip network favicon fetching (fast, offline)
 ./linkfolio.py --preserve-input           # write bookmarks-sorted.html instead of overwriting input
+./linkfolio.py -t other.html              # use a different page template
+./linkfolio.py --write-template           # regenerate template.html from BUILTIN_TEMPLATE
+./linkfolio.py --name Ada                 # name used by the clock page greeting
 ```
 
 ```bash
@@ -49,7 +53,45 @@ The `main()` pipeline (bottom of the file) is the map for everything:
    `bookmarks-sorted.html`.
 5. **Build the page** (`build_html`): a fixed hover-menu toolbar from the `"toolbar"`
    root (`build_toolbar`) plus two tables — an index and a main listing — generated
-   from the `"menu"`/`"other_bookmarks"` root's folders.
+   from the `"menu"`/`"other_bookmarks"` root's folders, all substituted into the
+   template returned by `load_template`.
+
+### Templating
+
+`build_html` no longer holds the page shell — it fills placeholders in a template:
+
+| Placeholder | Source |
+| --- | --- |
+| `{{LOGO}}` | `build_logo()` |
+| `{{TOOLBAR}}` | `build_toolbar()` |
+| `{{INDEX_TABLE}}` / `{{MAIN_TABLE}}` | `table_html()` |
+| `{{NAME}}` | `--name`, escaped by `_js_string` |
+
+- **`template.html` and `BUILTIN_TEMPLATE` must stay identical.** The module embeds
+  a copy so a `pip install`ed linkfolio (a bare `py-modules` install, no data files)
+  still works. `template.html` is regenerated with `--write-template`, and
+  `test_shipped_template_matches_builtin` fails if the two drift — edit
+  `BUILTIN_TEMPLATE`, then re-run `--write-template`.
+- `load_template` resolves in order: `--template` path (fatal if unreadable), then
+  `template.html` in the CWD, then next to `linkfolio.py`, then `BUILTIN_TEMPLATE`.
+- Substitution is a **single** `_PLACEHOLDER_RE.sub` pass, so a bookmark title
+  containing `{{MAIN_TABLE}}` is never expanded. Unknown `{{...}}` tags are left
+  alone, which keeps `{{` in user CSS/JS safe. Missing `{{TOOLBAR}}`/`{{MAIN_TABLE}}`
+  only warns — it doesn't `die()`.
+
+### The logo and the clock dashboard
+
+`build_logo()` emits the `<button id='logo'>` (inline SVG folder-plus-chain-link
+mark, wordmark `Link<em>Folio</em>`). Its click handler — in the template, not
+Python — toggles `body.tables-hidden`, which hides `main`, reveals `#dashboard`
+(clock/date/greeting) and the photo credit, and lightens
+`#overlay` so the background photo comes forward. Tables are shown by default;
+the state is deliberately not persisted.
+
+Splitting the toolbar means the fixed bar is now `<header id="topbar">` in the
+template, holding `{{LOGO}}` plus the `<nav id="toolbar">` that `build_toolbar`
+returns. `build_toolbar` still returns `""` when there's no toolbar root — the logo
+lives outside it, so the tables stay toggleable either way.
 
 ### Things to know before editing
 
@@ -68,5 +110,12 @@ The `main()` pipeline (bottom of the file) is the map for everything:
   simply omitted and the page still renders (toolbar only).
 - **Fatal errors** go through `die()` (prints `✖` to stderr, exits non-zero). Parse
   failure, missing menu/other_bookmarks root, and I/O errors all use it.
-- CSS is an inline heredoc string inside `build_html`; the page is self-contained
-  (no external assets — favicons are embedded data URIs).
+- **Never put a `background` on `body` in the template.** `#background`/`#overlay`
+  sit at negative z-index, and an in-flow element's background paints *above*
+  negative z-index layers — so a body background hides the photo everywhere body's
+  box reaches. The page colour belongs on `html`, whose background propagates to the
+  canvas and paints below them.
+- CSS and page JS live in the template, not in Python. Favicons are still embedded
+  data URIs, but the page is no longer strictly self-contained: the template's
+  `BACKGROUND_URL` points at an Unsplash photo. It degrades to a CSS gradient when
+  the image can't load, so the page still renders offline.

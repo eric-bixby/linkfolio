@@ -8,8 +8,15 @@ Layout
   root. First‑level folders behave like menu buttons; hovering reveals a drop‑down
   list. Bookmarks that aren't inside a folder are collected into a pseudo‑folder
   with the toolbar's title.
+* **Logo** pinned to the left of that toolbar. Clicking it hides/shows the link
+  tables; with the tables hidden the page becomes a clock/greeting dashboard over
+  the background photo. Tables are shown by default.
 * **Index/Main tables** built from *Bookmarks Menu* folders (if any). If the
   menu contains no folders the page still renders—just without the tables.
+* The page shell (markup, CSS, background photo, greeting) lives in an editable
+  **template.html**; generated content is substituted into ``{{PLACEHOLDER}}``
+  tags. A copy of the default template is built into this module, so linkfolio
+  still works when no template file is present.
 * Prints clear error messages (✖) and exits with *non‑zero* status on fatal
   problems (parse failure, missing roots, I/O errors).
 """
@@ -22,7 +29,9 @@ import argparse
 import base64
 import html
 import itertools
+import json
 import pathlib
+import re
 import sys
 import time
 import urllib.request
@@ -38,6 +47,7 @@ import bookmarks_parser
 
 DEFAULT_INPUT = "bookmarks.html"
 DEFAULT_OUTPUT = "index.html"
+DEFAULT_TEMPLATE = "template.html"
 SORTED_OUTPUT = "bookmarks-sorted.html"
 
 # Generic blue globe shown when a bookmark has no favicon (mirrors Google's default)
@@ -355,30 +365,87 @@ def write_netscape(parsed: list[dict], output_file: str) -> None:
 
 
 # ────
+# Logo
+# ────
+
+# Folder silhouette with a chain-link glyph cut into it; the folder inherits the
+# button's colour (currentColor) so a template can restyle it with plain CSS.
+_LOGO_SVG = (
+    "<svg class='logo-mark' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' "
+    "width='26' height='26' aria-hidden='true' focusable='false'>"
+    "<path d='M4 8.5A2.5 2.5 0 0 1 6.5 6h5.7a2 2 0 0 1 1.6.8l1.5 1.7h10.2"
+    "A2.5 2.5 0 0 1 28 11v13.5a2.5 2.5 0 0 1-2.5 2.5h-19A2.5 2.5 0 0 1 4 24.5z' "
+    "fill='currentColor'/>"
+    "<g transform='translate(8 10) scale(0.66)' fill='none' stroke='#1e1e1e' "
+    "stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'>"
+    "<path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/>"
+    "<path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/>"
+    "</g></svg>"
+)
+
+
+def build_logo() -> str:
+    """Return the clickable LinkFolio logo that toggles the link tables."""
+    return (
+        "<button id='logo' type='button' aria-pressed='false' "
+        "aria-controls='tables' title='Show or hide the link tables' "
+        "aria-label='Show or hide the link tables'>"
+        f"{_LOGO_SVG}"
+        "<span class='logo-text'>Link<em>Folio</em></span>"
+        "</button>"
+    )
+
+
+# ────
 # Page builder
 # ────
 
+_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 
-def build_html(
-    toolbar: str,
-    idx_cols: list[tuple[str, list[str]]],
-    main_cols: list[tuple[str, list[str]]],
-) -> str:
-    CSS = """
+# Placeholders a template needs for the page to be usable at all.
+_REQUIRED_PLACEHOLDERS = ("TOOLBAR", "MAIN_TABLE")
 
-html{
-    scroll-padding-top: 3rem;
-}
+BUILTIN_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bookmarks</title>
+<style>
+
+*{box-sizing:border-box;}
+
+html{scroll-padding-top:3.5rem;}
 
 html,body{
   margin:0;
   padding:0;
+  min-height:100%;
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;
-  background:#121212;
   color:#e0e0e0;
 }
 
-#toolbar{position:fixed;top:0;left:0;right:0;background:#1e1e1e;display:flex;gap:1.25em;padding:0.5em 1em;border-bottom:1px solid #333;z-index:1000;}
+/* The page colour goes on html only. html's background propagates to the canvas,
+   which paints *below* the negative z-index layers below; a background on body
+   would paint over them and hide the photo wherever body's box reaches. */
+html{background:#121212;}
+
+/* Background photo, and the scrim that keeps the tables readable on top of it.
+   The scrim lightens when the tables are hidden so the photo comes forward. */
+#background{position:fixed;inset:0;background-size:cover;background-position:center;background-repeat:no-repeat;opacity:0;transition:opacity 1s ease-in-out;z-index:-2;}
+#overlay{position:fixed;inset:0;background:rgba(18,18,18,0.62);transition:background .35s ease;z-index:-1;}
+body.tables-hidden #overlay{background:rgba(0,0,0,0.25);}
+
+/* Top bar: logo on the left, bookmark menus to its right. */
+#topbar{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:1.25em;background:#1e1e1e;border-bottom:1px solid #333;padding:0.4em 1em;z-index:1000;}
+#logo{display:flex;align-items:center;gap:.45em;margin:0;padding:.15em .35em;border:0;border-radius:4px;background:none;color:#ffcb6b;font:inherit;cursor:pointer;}
+#logo:hover{background:#2a2a2a;}
+#logo:focus-visible{outline:2px solid #4ea3ff;outline-offset:2px;}
+.logo-mark{flex:none;display:block;}
+.logo-text{font-weight:700;font-size:1.05em;white-space:nowrap;}
+.logo-text em{font-style:normal;color:#4ea3ff;}
+
+#toolbar{display:flex;gap:1.25em;align-items:center;min-width:0;}
 #toolbar .tb-item{position:relative;}
 #toolbar .tb-label{color:#ffcb6b;font-weight:bold;cursor:pointer;}
 #toolbar .tb-menu{display:none;position:absolute;top:100%;left:0;background:#1e1e1e;padding:0.5em;border:1px solid #333;max-width:320px;white-space:nowrap;}
@@ -386,13 +453,16 @@ html,body{
 #toolbar a{color:#4ea3ff;text-decoration:none;line-height:1.3;}
 #toolbar a:hover{text-decoration:underline;}
 
-main{margin-top:3rem;padding:1rem;}
+main{position:relative;z-index:1;margin-top:3.5rem;padding:1rem;}
 
 table {
   width: 1200px;
+  max-width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
   border: 1px solid black;
+  background: rgba(18,18,18,0.85);
+  margin-bottom: 1rem;
 }
 
 th,td{text-align:left;vertical-align:top;padding:2px;border:none}
@@ -407,18 +477,176 @@ a:hover{text-decoration:underline;}
 .folder{font-weight:bold;color:#ffcb6b;}
 img.favicon{width:16px;height:16px;vertical-align:middle;margin-right:0.5em;border-radius:2px;}
 
+/* Clock dashboard: hidden until the logo hides the tables. */
+#dashboard{display:none;position:relative;z-index:1;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;color:#fff;text-shadow:2px 2px 8px rgba(0,0,0,0.7);}
+#clock{font-size:120px;font-weight:300;letter-spacing:2px;margin-bottom:20px;}
+#date{font-size:24px;font-weight:300;margin-bottom:40px;opacity:.9;}
+#greeting{font-size:32px;font-weight:300;margin-top:20px;opacity:.95;}
+.photo-credit{display:none;position:fixed;bottom:20px;left:20px;z-index:1;color:#fff;font-size:12px;text-shadow:1px 1px 4px rgba(0,0,0,0.8);opacity:.7;transition:opacity .3s;}
+.photo-credit:hover{opacity:1;}
+.photo-credit a{color:#fff;}
+
+body.tables-hidden{overflow:hidden;}
+body.tables-hidden main{display:none;}
+body.tables-hidden #dashboard{display:flex;}
+body.tables-hidden .photo-credit{display:block;}
+
+@media (max-width:768px){
+  #clock{font-size:72px;}
+  #date{font-size:18px;}
+  #greeting{font-size:24px;}
+  .logo-text{display:none;}
+}
+
+</style>
+</head>
+<body>
+<a id="top"></a>
+
+<div id="background"></div>
+<div id="overlay"></div>
+
+<header id="topbar">
+{{LOGO}}
+{{TOOLBAR}}
+</header>
+
+<main id="tables">
+{{INDEX_TABLE}}
+{{MAIN_TABLE}}
+</main>
+
+<div id="dashboard">
+  <div id="clock"></div>
+  <div id="date"></div>
+  <div id="greeting"></div>
+</div>
+
+<div class="photo-credit">
+  Photo by <a href="https://unsplash.com" target="_blank" rel="noopener" id="photographer">Unsplash</a>
+</div>
+
+<script>
+// Edit these two lines to change the background photo and who gets greeted.
+const BACKGROUND_URL = 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1920&h=1080&fit=crop';
+const USER_NAME = "{{NAME}}";
+
+function updateClock() {
+  const now = new Date();
+  let hours = now.getHours();
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;  // 0 -> 12 for midnight/noon
+  document.getElementById('clock').textContent =
+    `${String(hours).padStart(2, '0')}:${minutes} ${ampm}`;
+}
+
+function updateDate() {
+  const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  document.getElementById('date').textContent =
+    new Date().toLocaleDateString('en-US', options);
+}
+
+function updateGreeting() {
+  const hour = new Date().getHours();
+  let greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
+  if (USER_NAME) greeting += ', ' + USER_NAME;
+  document.getElementById('greeting').textContent = greeting;
+}
+
+// Preload the photo so it fades in once; fall back to a gradient when offline.
+function loadBackground() {
+  const background = document.getElementById('background');
+  const img = new Image();
+  img.onload = () => {
+    background.style.backgroundImage = `url('${BACKGROUND_URL}')`;
+    background.style.opacity = '1';
+  };
+  img.onerror = () => {
+    background.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+    background.style.opacity = '1';
+  };
+  img.src = BACKGROUND_URL;
+}
+
+// The logo swaps between the link tables and the clock dashboard.
+function initLogo() {
+  const logo = document.getElementById('logo');
+  if (!logo) return;
+  logo.addEventListener('click', () => {
+    const hidden = document.body.classList.toggle('tables-hidden');
+    logo.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+  });
+}
+
+function init() {
+  updateClock();
+  updateDate();
+  updateGreeting();
+  loadBackground();
+  initLogo();
+  setInterval(updateClock, 1000);
+  setInterval(() => { updateDate(); updateGreeting(); }, 60000);
+}
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
 """
 
-    return "\n".join(
-        [
-            "<!doctype html><html><head><meta charset='utf-8'><title>Bookmarks</title>",
-            f"<style>{CSS}</style></head><body><a id='top'></a>",
-            toolbar,
-            "<main>",
-            table_html(idx_cols),
-            table_html(main_cols),
-            "</main></body></html>",
-        ]
+
+def _js_string(value: str) -> str:
+    """Escape *value* for use inside a double-quoted JS string literal."""
+    # json.dumps handles quotes/backslashes/control chars; "<" is neutralised so a
+    # crafted value can't close the <script> element.
+    return json.dumps(value)[1:-1].replace("<", "\\u003c")
+
+
+def load_template(path: str | None) -> str:
+    """Return the page template: *path* if given, else template.html, else the builtin."""
+    if path:
+        try:
+            return pathlib.Path(path).read_text(encoding="utf-8")
+        except Exception as exc:
+            die(f"Failed to read template '{path}': {exc}")
+
+    here = pathlib.Path(__file__).resolve().parent
+    for candidate in (pathlib.Path.cwd() / DEFAULT_TEMPLATE, here / DEFAULT_TEMPLATE):
+        if candidate.is_file():
+            try:
+                text = candidate.read_text(encoding="utf-8")
+            except Exception as exc:
+                die(f"Failed to read template '{candidate}': {exc}")
+            print(f"Using template {candidate}")
+            return text
+    return BUILTIN_TEMPLATE
+
+
+def build_html(
+    toolbar: str,
+    idx_cols: list[tuple[str, list[str]]],
+    main_cols: list[tuple[str, list[str]]],
+    template: str | None = None,
+    name: str = "",
+) -> str:
+    """Substitute the generated content into *template* (default: the builtin one)."""
+    tpl = BUILTIN_TEMPLATE if template is None else template
+
+    for missing in (p for p in _REQUIRED_PLACEHOLDERS if f"{{{{{p}}}}}" not in tpl):
+        print(f"⚠ Template has no {{{{{missing}}}}} placeholder", file=sys.stderr)
+
+    values = {
+        "LOGO": build_logo(),
+        "TOOLBAR": toolbar,
+        "INDEX_TABLE": table_html(idx_cols),
+        "MAIN_TABLE": table_html(main_cols),
+        "NAME": _js_string(name),
+    }
+    # One pass, so substituted content is never rescanned for placeholders.
+    return _PLACEHOLDER_RE.sub(
+        lambda m: values.get(m.group(1), m.group(0)),
+        tpl,
     )
 
 
@@ -450,6 +678,23 @@ def main() -> None:
         help=f"HTML page to write (default: {DEFAULT_OUTPUT})",
     )
     parser.add_argument(
+        "-t",
+        "--template",
+        help=f"page template to fill in (default: {DEFAULT_TEMPLATE} if present, else built-in)",
+    )
+    parser.add_argument(
+        "--write-template",
+        nargs="?",
+        const=DEFAULT_TEMPLATE,
+        metavar="PATH",
+        help=f"write the built-in template to PATH (default: {DEFAULT_TEMPLATE}) and exit",
+    )
+    parser.add_argument(
+        "--name",
+        default="",
+        help="name to greet on the clock dashboard (default: greet without a name)",
+    )
+    parser.add_argument(
         "--no-icons",
         action="store_true",
         help="skip fetching missing favicons from the network",
@@ -460,6 +705,18 @@ def main() -> None:
         help=f"don't overwrite the input file with the sorted export; write {SORTED_OUTPUT} instead",
     )
     args = parser.parse_args()
+
+    if args.write_template:
+        try:
+            pathlib.Path(args.write_template).write_text(
+                BUILTIN_TEMPLATE, encoding="utf-8"
+            )
+        except Exception as exc:
+            die(f"Failed to write '{args.write_template}': {exc}")
+        print(f"✔ Wrote {args.write_template}")
+        return
+
+    template = load_template(args.template)
 
     # Parse export ----
     try:
@@ -512,7 +769,9 @@ def main() -> None:
             )
 
     # Generate full HTML ----
-    html_output = build_html(toolbar_html, index_cols, main_cols)
+    html_output = build_html(
+        toolbar_html, index_cols, main_cols, template=template, name=args.name
+    )
 
     try:
         pathlib.Path(args.output).write_text(html_output, encoding="utf-8")
