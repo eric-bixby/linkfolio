@@ -273,13 +273,18 @@ def table_html(cols: list[tuple[str, list[str]]]) -> str:
 
 
 def _ns_escape(s: str) -> str:
-    """Escape for Netscape bookmark output (same entities Firefox emits)."""
+    """Escape text for Netscape bookmark output."""
     return (
         s.replace("&", "&amp;")
         .replace('"', "&quot;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _ns_url_escape(s: str) -> str:
+    """Escape bookmark URLs for Netscape output without rewriting ampersands."""
+    return s.replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _folder_attrs(n: dict) -> str:
@@ -304,7 +309,7 @@ def _bookmark_attrs(n: dict, now: int) -> str:
     parts.append(f'LAST_MODIFIED="{now}"')
     icon_uri = n.get("icon_uri") or n.get("iconUri") or n.get("ICON_URI")
     if icon_uri:
-        parts.append(f'ICON_URI="{_ns_escape(icon_uri)}"')
+        parts.append(f'ICON_URI="{_ns_url_escape(icon_uri)}"')
     icon = n.get("icon") or n.get("ICON")
     if icon:
         parts.append(f'ICON="{_ns_escape(icon)}"')
@@ -325,7 +330,7 @@ def _netscape_nodes(nodes: list[dict], depth: int = 1, now: int = 0) -> list[str
             lines.append(f"{pad}</DL><p>")
         elif n.get("type") == "bookmark":
             title = _ns_escape(n.get("title", "") or n.get("url", ""))
-            url = _ns_escape(n.get("url", ""))
+            url = _ns_url_escape(n.get("url", ""))
             attrs = _bookmark_attrs(n, now)
             lines.append(f'{pad}<DT><A HREF="{url}"{attrs}>{title}</A>')
     return lines

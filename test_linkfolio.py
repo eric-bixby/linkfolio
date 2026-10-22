@@ -223,6 +223,10 @@ def test_ns_escape_entities():
     assert lf._ns_escape('a&b"c<d>e') == "a&amp;b&quot;c&lt;d&gt;e"
 
 
+def test_ns_url_escape_preserves_ampersands():
+    assert lf._ns_url_escape('https://x.test/?a=1&b="2"<3>') == "https://x.test/?a=1&b=&quot;2&quot;&lt;3&gt;"
+
+
 def test_folder_attrs_flags_roots():
     assert 'PERSONAL_TOOLBAR_FOLDER="true"' in lf._folder_attrs(
         folder("t", ns_root="toolbar", add_date="1")
@@ -266,7 +270,11 @@ def test_netscape_nodes_bookmark_title_falls_back_to_url():
 
 def test_write_netscape_roundtrips_menu_and_toolbar(tmp_path):
     parsed = [
-        folder("Bookmarks Toolbar", ns_root="toolbar", children=[bookmark("HN", "https://hn/")]),
+        folder(
+            "Bookmarks Toolbar",
+            ns_root="toolbar",
+            children=[bookmark("HN", "https://hn/?a=1&b=2")],
+        ),
         folder("Bookmarks Menu", ns_root="menu", children=[folder("News")]),
     ]
     out = tmp_path / "export.html"
@@ -274,6 +282,8 @@ def test_write_netscape_roundtrips_menu_and_toolbar(tmp_path):
     text = out.read_text()
     assert text.startswith("<!DOCTYPE NETSCAPE-Bookmark-file-1>")
     assert 'PERSONAL_TOOLBAR_FOLDER="true"' in text
+    assert 'HREF="https://hn/?a=1&b=2"' in text
+    assert '&amp;' not in text
     # menu root is emitted without a wrapper <H3>Bookmarks Menu</H3>
     assert "Bookmarks Menu" not in text
     assert ">News</H3>" in text
